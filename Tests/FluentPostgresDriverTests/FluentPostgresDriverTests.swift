@@ -1,4 +1,5 @@
 import Logging
+import FluentKit
 import FluentBenchmark
 import FluentPostgresDriver
 import XCTest
@@ -190,6 +191,66 @@ final class FluentPostgresDriverTests: XCTestCase {
         try new.save(on: self.connectionPool).wait()
     }
 
+    func testLargeSave() throws {
+        try? Galaxy.migration.revert(on: self.connectionPool).wait()
+        try Galaxy.migration.prepare(on: self.connectionPool).wait()
+        defer {
+            try! Galaxy.migration.revert(on: self.connectionPool).wait()
+        }
+        for _ in 0..<10 {
+            var galaxies: [Galaxy] = []
+            for _ in 0..<1_000 {
+                galaxies.append(Galaxy(name: "Test"))
+            }
+            try galaxies.create(on: self.connectionPool).wait()
+        }
+
+        try XCTAssertEqual(Galaxy.query(on: self.connectionPool).count().wait(), 10_000)
+    }
+
+    func testLargeSave2() throws {
+        try? Galaxy.migration.revert(on: self.connectionPool).wait()
+        try Galaxy.migration.prepare(on: self.connectionPool).wait()
+        defer {
+            try! Galaxy.migration.revert(on: self.connectionPool).wait()
+        }
+        for _ in 0..<1_000 {
+            var galaxies: [[String: DatabaseQuery.Value]] = []
+            for _ in 0..<1_000 {
+                galaxies.append([
+                    "id": .default,
+                    "name": .bind("Test")
+                ])
+            }
+            try Galaxy.query(on: self.connectionPool).set(galaxies).create().wait()
+        }
+
+        try XCTAssertEqual(Galaxy.query(on: self.connectionPool).count().wait(), 1_000_000)
+    }
+
+    func testLargeSave3() throws {
+        try? Galaxy.migration.revert(on: self.connectionPool).wait()
+        try Galaxy.migration.prepare(on: self.connectionPool).wait()
+        defer {
+            try! Galaxy.migration.revert(on: self.connectionPool).wait()
+        }
+        for _ in 0..<1_000 {
+            var sql = """
+            INSERT INTO "galaxies" ("id", "name") VALUES (DEFAULT, $1)
+            """
+            var binds: [PostgresData] = ["Test"]
+            for i in 2...1_000 {
+                sql.append(", (DEFAULT, $\(i))")
+                binds.append("Test")
+            }
+            try self.connectionPool.query(sql, binds) { row in
+                // ignore
+            }.wait()
+        }
+
+        try XCTAssertEqual(Galaxy.query(on: self.connectionPool).count().wait(), 1_000_000)
+    }
+
     var benchmarker: FluentBenchmarker!
     var connectionPool: ConnectionPool<PostgresConnectionSource>!
     var eventLoopGroup: EventLoopGroup!
@@ -228,7 +289,7 @@ final class FluentPostgresDriverTests: XCTestCase {
 let isLoggingConfigured: Bool = {
     LoggingSystem.bootstrap { label in
         var handler = StreamLogHandler.standardOutput(label: label)
-        handler.logLevel = .debug
+        handler.logLevel = .error
         return handler
     }
     return true
